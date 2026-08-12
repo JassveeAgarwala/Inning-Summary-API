@@ -7,9 +7,11 @@ from pydantic import BaseModel, Field
 app = FastAPI(
     title="Khel AI Innings Summary API",
     version="1.0.0",
-    description="Calculates innings statistics from raw ball-event data."
+    description="Calculates innings statistics from raw ball-event data. Integration-ready: accepts events via POST."
 )
 
+
+# --- Request Models ---
 
 class Wicket(BaseModel):
     player_out: str
@@ -29,6 +31,13 @@ class BallEvent(BaseModel):
     wicket: Optional[Wicket] = None
 
 
+class InningsSummaryRequest(BaseModel):
+    innings_id: str
+    events: List[BallEvent]
+
+
+# --- Response Models ---
+
 class InningsSummary(BaseModel):
     innings_id: str
     total_runs: int
@@ -43,108 +52,7 @@ class InningsSummary(BaseModel):
     recent_balls: List[dict]
 
 
-# Raw ball-event data
-RAW_EVENTS = {
-    "innings-001": [
-        BallEvent(
-            event_id="ball-1",
-            innings_id="innings-001",
-            over_number=0,
-            ball_number=1,
-            batter="Rohit Sharma",
-            bowler="Mitchell Starc",
-            batter_runs=4
-        ),
-        BallEvent(
-            event_id="ball-2",
-            innings_id="innings-001",
-            over_number=0,
-            ball_number=2,
-            batter="Rohit Sharma",
-            bowler="Mitchell Starc",
-            batter_runs=1
-        ),
-        BallEvent(
-            event_id="ball-3",
-            innings_id="innings-001",
-            over_number=0,
-            ball_number=3,
-            batter="Virat Kohli",
-            bowler="Mitchell Starc",
-            batter_runs=6
-        ),
-        BallEvent(
-            event_id="ball-4",
-            innings_id="innings-001",
-            over_number=0,
-            ball_number=4,
-            batter="Virat Kohli",
-            bowler="Mitchell Starc",
-            batter_runs=0
-        ),
-        BallEvent(
-            event_id="ball-5",
-            innings_id="innings-001",
-            over_number=0,
-            ball_number=5,
-            batter="Virat Kohli",
-            bowler="Mitchell Starc",
-            batter_runs=2
-        ),
-        BallEvent(
-            event_id="ball-6",
-            innings_id="innings-001",
-            over_number=0,
-            ball_number=6,
-            batter="Virat Kohli",
-            bowler="Mitchell Starc",
-            batter_runs=1
-        ),
-        BallEvent(
-            event_id="ball-7",
-            innings_id="innings-001",
-            over_number=1,
-            ball_number=1,
-            batter="Rohit Sharma",
-            bowler="Pat Cummins",
-            batter_runs=0,
-            extras={"wides": 1}
-        ),
-        BallEvent(
-            event_id="ball-8",
-            innings_id="innings-001",
-            over_number=1,
-            ball_number=2,
-            batter="Rohit Sharma",
-            bowler="Pat Cummins",
-            batter_runs=2
-        ),
-        BallEvent(
-            event_id="ball-9",
-            innings_id="innings-001",
-            over_number=1,
-            ball_number=3,
-            batter="Rohit Sharma",
-            bowler="Pat Cummins",
-            batter_runs=0,
-            wicket=Wicket(
-                player_out="Rohit Sharma",
-                kind="caught",
-                credited_to_bowler=True
-            )
-        )
-    ],
-    "innings-empty": []
-}
-
-
-class BallEventRepository:
-    def exists(self, innings_id: str) -> bool:
-        return innings_id in RAW_EVENTS
-
-    def get_events(self, innings_id: str) -> List[BallEvent]:
-        return RAW_EVENTS.get(innings_id, [])
-
+# --- Service Layer (no internal data) ---
 
 class InningsSummaryService:
     NON_BOWLER_WICKETS = {
@@ -155,18 +63,11 @@ class InningsSummaryService:
         "obstructing the field"
     }
 
-    def __init__(self, repository: BallEventRepository):
-        self.repository = repository
-
     def create_summary(
         self,
-        innings_id: str
-    ) -> Optional[InningsSummary]:
-
-        if not self.repository.exists(innings_id):
-            return None
-
-        events = self.repository.get_events(innings_id)
+        innings_id: str,
+        events: List[BallEvent]
+    ) -> InningsSummary:
 
         total_runs = sum(self.ball_total(event) for event in events)
 
@@ -348,9 +249,10 @@ class InningsSummaryService:
         return recent
 
 
-repository = BallEventRepository()
-summary_service = InningsSummaryService(repository)
+summary_service = InningsSummaryService()
 
+
+# --- Routes ---
 
 @app.get("/")
 def home():
@@ -367,17 +269,31 @@ def health():
     }
 
 
-@app.get(
-    "/innings/{innings_id}/summary",
-    response_model=InningsSummary
+@app.post(
+    "/innings/summary",
+    response_model=InningsSummary,
+    summary="Get innings summary from raw events",
+    description="Accepts innings_id and list of ball events, returns a full innings summary. Integration-ready for Khel AI MVP."
 )
-def get_innings_summary(innings_id: str):
-    summary = summary_service.create_summary(innings_id)
-
-    if summary is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Innings not found"
+def get_innings_summary(payload: InningsSummaryRequest):
+    if not payload.events:
+        # Still return a valid summary with zeros instead of 404,
+        # so frontend can show “no data” cleanly.
+        return InningsSummary(
+            innings_id=payload.innings_id,
+            total_runs=0,
+            wickets=0,
+            legal_balls=0,
+            overs="0.0",
+            run_rate=0.0,
+            batters=[],
+            bowlers=[],
+            top_batter=None,
+            top_bowler=None,
+            recent_balls=[]
         )
 
-    return summary
+    return summary_service.create_summary(
+        innings_id=payload.innings_id,
+        events=payload.events
+    )
